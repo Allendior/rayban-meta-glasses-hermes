@@ -53,10 +53,15 @@ In Visor's assistant settings choose:
 - Vision: **off** for this first prototype
 
 The bridge also advertises `hermes`, which is an English alias. Visor sends recent conversation
-history on every request; the adapter keeps the newest turns that fit the bridge's configured text
-limit. Visor's OpenAI tool declarations are accepted but ignored because Hermes has its own tool
+history on every request; the adapter keeps a contiguous suffix of the newest messages that fit
+the bridge's configured text limit and discards an initial assistant answer if its question was
+trimmed. It never skips a large recent message to reinsert unrelated older exchanges. Visor's
+OpenAI tool declarations are accepted but ignored because Hermes has its own tool
 system. Each completion also includes `hermes_latency_ms`, so a direct `curl` test can separate
 Hermes/model time from glasses and phone audio time.
+
+This endpoint supports non-streaming requests only. `stream: true` is rejected with HTTP 400
+before a Hermes turn is started; configure compatible clients with `stream: false`.
 
 You can verify the adapter before touching the glasses:
 

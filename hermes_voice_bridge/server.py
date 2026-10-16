@@ -103,14 +103,18 @@ def openai_messages_to_prompt(messages: object, max_chars: int) -> str:
     if len(newest) > max_chars:
         raise ValueError(f"latest user message is too long (maximum {max_chars} characters)")
 
-    selected = [newest]
+    selected = [lines[latest_user]]
     used = len(newest)
-    for _, line in reversed(lines[:latest_user]):
+    for role, line in reversed(lines[:latest_user]):
         added = len(line) + 1
-        if used + added <= max_chars:
-            selected.insert(0, line)
-            used += added
-    return "\n".join(selected)
+        if used + added > max_chars:
+            break
+        selected.insert(0, (role, line))
+        used += added
+    # A clipped history must not start with an answer whose question was dropped.
+    while selected[0][0] == "assistant":
+        selected.pop(0)
+    return "\n".join(line for _, line in selected)
 
 
 class BridgeApplication:
@@ -240,6 +244,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/v1/chat/completions":
                 payload = self._read_json()
+                if payload.get("stream"):
+                    raise ValueError("streaming is not supported; use stream=false")
                 # Visor advertises its local memory tools on normal turns. Hermes has
                 # its own tool system, so accepting and ignoring these declarations
                 # avoids a guaranteed failed request/retry on every spoken question.

@@ -33,6 +33,8 @@ import ai.hermes.glasses.net.BridgeEndpoint
 import ai.hermes.glasses.net.HermesBridgeClient
 import ai.hermes.glasses.storage.SecureSettings
 import ai.hermes.glasses.voice.ReplyMode
+import ai.hermes.glasses.voice.LocalVoiceOption
+import ai.hermes.glasses.voice.selectLocalVoice
 import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.selectors.AutoDeviceSelector
 import com.meta.wearable.dat.core.session.DeviceSession
@@ -53,8 +55,11 @@ import com.meta.wearable.dat.speech.addSpeech
 import com.meta.wearable.dat.speech.types.SpeechState
 import java.io.File
 import java.util.Locale
+import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -87,6 +92,7 @@ class MainActivity : ComponentActivity() {
     private var systemTts: TextToSpeech? = null
     private var systemTtsReady = false
     private var activeFastReply: FastReply? = null
+    private var fastReplyWatchdog: Job? = null
 
     private data class FastReply(
         val utteranceId: String,
@@ -128,6 +134,7 @@ class MainActivity : ComponentActivity() {
         toneGenerator?.release()
         toneGenerator = null
         activeFastReply = null
+        fastReplyWatchdog?.cancel()
         systemTts?.stop()
         systemTts?.shutdown()
         systemTts = null
@@ -405,7 +412,7 @@ class MainActivity : ComponentActivity() {
         val mode = selectedReplyMode()
         val turnLanguage = selectedLanguage()
         showStatus(
-            if (mode == ReplyMode.FAST_SYSTEM) "Asking Hermes… fast voice is ready"
+            if (mode == ReplyMode.FAST_SYSTEM) "Asking Hermes… using fast voice when available"
             else "Asking Hermes… cloned speech can take several seconds",
         )
         lifecycleScope.launch {
@@ -429,6 +436,8 @@ class MainActivity : ComponentActivity() {
                     showStatus("Hermes answered without audio")
                     dispatch(TapToTalkEvent.ResponseFinished)
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
                 showStatus(error.message ?: "Hermes request failed")
                 dispatch(TapToTalkEvent.ResponseFailed)
@@ -447,13 +456,21 @@ class MainActivity : ComponentActivity() {
                     .build(),
             )
             systemTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
+                override fun onStart(utteranceId: String?) {
+                    runOnUiThread {
+                        val reply = activeFastReply ?: return@runOnUiThread
+                        if (reply.utteranceId != utteranceId) return@runOnUiThread
+                        watchFastReply(reply, 45_000, "Fast Android voice did not finish")
+                        showStatus("Speaking with fast Android voice over the active media route")
+                    }
+                }
 
                 override fun onDone(utteranceId: String?) {
                     runOnUiThread {
-                        val active = activeFastReply
-                        if (active?.utteranceId != utteranceId) return@runOnUiThread
+                        val active = activeFastReply ?: return@runOnUiThread
+                        if (active.utteranceId != utteranceId) return@runOnUiThread
                         activeFastReply = null
+                        fastReplyWatchdog?.cancel()
                         showStatus("Fast Android voice finished")
                         dispatch(TapToTalkEvent.ResponseFinished)
                     }
@@ -467,13 +484,17 @@ class MainActivity : ComponentActivity() {
                 override fun onError(utteranceId: String?, errorCode: Int) {
                     runOnUiThread { handleSystemTtsFailure(utteranceId) }
                 }
+
+                override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                    runOnUiThread { handleSystemTtsFailure(utteranceId) }
+                }
             })
         }
     }
 
     private fun speakWithSystemVoice(client: HermesBridgeClient, text: String, language: String) {
         val reply = FastReply(
-            utteranceId = "hermes-fast-${System.currentTimeMillis()}",
+            utteranceId = "hermes-fast-${UUID.randomUUID()}",
             client = client,
             text = text,
             language = language,
@@ -489,15 +510,38 @@ class MainActivity : ComponentActivity() {
             "fr" -> Locale.forLanguageTag("fr-FR")
             else -> Locale.forLanguageTag("en-US")
         }
-        if (tts.setLanguage(locale) < TextToSpeech.LANG_AVAILABLE) {
-            fallbackToClonedVoice(reply, "Fast Android voice has no $language language pack")
+        val voices = tts.voices.orEmpty()
+        val selected = selectLocalVoice(voices.map { voice ->
+            LocalVoiceOption(
+                name = voice.name,
+                locale = voice.locale,
+                requiresNetwork = voice.isNetworkConnectionRequired,
+                installed = TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in voice.features.orEmpty(),
+                latency = voice.latency,
+                quality = voice.quality,
+            )
+        }, locale)
+        val voice = voices.firstOrNull { it.name == selected?.name }
+        if (voice == null || tts.setVoice(voice) != TextToSpeech.SUCCESS) {
+            fallbackToClonedVoice(reply, "Fast Android voice has no usable local $language voice")
             return
         }
+        watchFastReply(reply, 5_000, "Fast Android voice did not start")
         val result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, reply.utteranceId)
         if (result == TextToSpeech.ERROR) {
             fallbackToClonedVoice(reply, "Fast Android voice could not start")
         } else {
-            showStatus("Speaking with fast Android voice over the active media route")
+            showStatus("Starting fast Android voice over the active media route")
+        }
+    }
+
+    private fun watchFastReply(reply: FastReply, timeoutMs: Long, reason: String) {
+        fastReplyWatchdog?.cancel()
+        fastReplyWatchdog = lifecycleScope.launch {
+            delay(timeoutMs)
+            // Clear the job before fallback so it cannot cancel its own recovery work.
+            fastReplyWatchdog = null
+            fallbackToClonedVoice(reply, reason)
         }
     }
 
@@ -510,6 +554,10 @@ class MainActivity : ComponentActivity() {
     private fun fallbackToClonedVoice(reply: FastReply, reason: String) {
         if (activeFastReply?.utteranceId != reply.utteranceId) return
         activeFastReply = null
+        fastReplyWatchdog?.cancel()
+        fastReplyWatchdog = null
+        // Invalidate first: stop() may deliver onStop/onError after fallback has begun.
+        systemTts?.stop()
         showStatus("$reason; generating cloned voice…")
         lifecycleScope.launch {
             try {
@@ -517,6 +565,8 @@ class MainActivity : ComponentActivity() {
                     reply.client.synthesize(reply.text, reply.language)
                 }
                 downloadAndPlay(reply.client, audioPath, "Playing cloned-voice fallback")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
                 showStatus(error.message ?: "Both fast and cloned speech failed")
                 dispatch(TapToTalkEvent.ResponseFailed)

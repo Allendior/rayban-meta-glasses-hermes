@@ -16,13 +16,22 @@ bridge running on the Mac mini.
 The **Reply voice** selector has two modes:
 
 - **Fast Android voice** asks Hermes for text only and uses warmed Android
-  TextToSpeech over the active media route. If Android TTS is unavailable for
-  the selected language, it automatically falls back to cloned speech.
+  TextToSpeech over the active media route. It selects an installed local voice
+  for the requested language, preferring the requested accent and lower
+  engine-reported latency. Network-required voices are excluded. If no local
+  voice is available, the engine fails/stops, or speech does not start within
+  five seconds (or finish within 45 seconds after starting), it stops Android
+  TTS and falls back to cloned speech using the existing answer. This does not
+  send the question to Hermes again. Install English, Hindi, and French voice
+  data in Android's text-to-speech settings before testing fast mode.
 - **Cloned voice** preserves the original bridge-generated WAV path. It sounds
   like the configured owner but starts later because synthesis must finish first.
 
 Fast Android voice is not the glasses' private built-in TTS. Bluetooth routing
 still depends on the phone's active media output and needs a physical test.
+
+The manifest declares TTS service visibility for Android 11 and later, as
+required by the [Android TextToSpeech API](https://developer.android.com/reference/android/speech/tts/TextToSpeech).
 
 Typed questions are also supported. Use them to test Tailscale and the bridge
 before completing Meta registration.

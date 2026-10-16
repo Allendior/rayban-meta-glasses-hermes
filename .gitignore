@@ -12,3 +12,4 @@ android/.kotlin/
 android/local.properties
 android/**/build/
 android/.android-home/
+android/apk-backups/

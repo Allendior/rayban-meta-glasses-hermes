@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from hermes_voice_bridge.config import Settings, normalize_language
 from hermes_voice_bridge.hermes import HermesClient, HermesError, limit_spoken_reply
@@ -193,6 +194,33 @@ class OpenAICompatibilityTests(unittest.TestCase):
                 max_chars=500,
             )
 
+    def test_history_trimming_keeps_a_contiguous_suffix_without_orphan_answers(self):
+        prompt = openai_messages_to_prompt(
+            [
+                {"role": "user", "content": "Old question"},
+                {"role": "assistant", "content": "Old answer"},
+                {"role": "user", "content": "Recent question " * 20},
+                {"role": "assistant", "content": "Yes."},
+                {"role": "user", "content": "Why?"},
+            ],
+            max_chars=80,
+        )
+        self.assertEqual(prompt, "User: Why?")
+
+    def test_latest_question_must_fit_even_without_history(self):
+        with self.assertRaisesRegex(ValueError, "latest user message is too long"):
+            openai_messages_to_prompt(
+                [{"role": "user", "content": "long question"}], max_chars=10
+            )
+
+    def test_text_parts_preserve_unicode(self):
+        prompt = openai_messages_to_prompt(
+            [{"role": "user", "content": [{"type": "text", "text": "नमस्ते"},
+                                           {"type": "text", "text": "Bonjour"}]}],
+            max_chars=80,
+        )
+        self.assertEqual(prompt, "User: नमस्ते\nBonjour")
+
     def test_latest_user_question_is_required(self):
         with self.assertRaisesRegex(ValueError, "user message"):
             openai_messages_to_prompt(
@@ -218,6 +246,13 @@ class OpenAICompatibilityHttpTests(unittest.TestCase):
                 return "Fast answer.", "session-test"
 
         self.server.app.hermes = FakeHermes(self.turns)
+        # Text-only paths must never call a real synthesizer or touch model caches.
+        self.synthesis = patch.object(
+            self.server.app.speech, "synthesize",
+            side_effect=AssertionError("unexpected synthesis on a text-only path"),
+        )
+        self.synthesize = self.synthesis.start()
+        self.addCleanup(self.synthesis.stop)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.connection = http.client.HTTPConnection(
@@ -276,6 +311,75 @@ class OpenAICompatibilityHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result["choices"][0]["message"]["content"], "Fast answer.")
         self.assertEqual(self.turns, [("User: hello", None, "en")])
+
+    def test_android_fast_turn_preserves_session_without_synthesis(self):
+        status, first = self.request(
+            "POST", "/v1/turn", {"text": "Bonjour", "language": "fr", "speak": False}
+        )
+        self.assertEqual(status, 200)
+        self.assertIsNone(first["audio_url"])
+        status, second = self.request(
+            "POST", "/v1/turn",
+            {"text": "Et ensuite?", "language": "fr", "speak": False,
+             "session_id": first["session_id"]},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(second["session_id"], first["session_id"])
+        self.assertEqual(self.turns, [("Bonjour", None, "fr"),
+                                     ("Et ensuite?", "session-test", "fr")])
+        self.synthesize.assert_not_called()
+
+    def test_cloned_fallback_synthesizes_existing_reply_without_another_hermes_turn(self):
+        self.synthesize.side_effect = None
+        self.synthesize.return_value = ("testaudio", Path(self.temp.name) / "test.wav", "audio/wav")
+        status, result = self.request(
+            "POST", "/v1/synthesize", {"text": "Fast answer.", "language": "hi"}
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(result["audio_url"], "/v1/audio/testaudio")
+        self.synthesize.assert_called_once_with("Fast answer.", "hi")
+        self.assertEqual(self.turns, [])
+
+    def test_cloned_turn_still_requests_audio(self):
+        self.synthesize.side_effect = None
+        self.synthesize.return_value = ("testaudio", Path(self.temp.name) / "test.wav", "audio/wav")
+        status, result = self.request(
+            "POST", "/v1/turn", {"text": "Hello", "language": "en", "speak": True}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["audio_url"], "/v1/audio/testaudio")
+        self.synthesize.assert_called_once_with("Fast answer.", "en")
+
+    def test_streaming_is_rejected_before_spending_a_hermes_turn(self):
+        status, result = self.request(
+            "POST", "/v1/chat/completions",
+            {"messages": [{"role": "user", "content": "hello"}], "stream": True},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("stream=false", result["error"])
+        self.assertEqual(self.turns, [])
+
+    def test_chat_and_fast_turn_authentication_reject_before_upstream_work(self):
+        for path, body in (
+            ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hello"}]}),
+            ("/v1/turn", {"text": "hello", "speak": False}),
+            ("/v1/synthesize", {"text": "hello"}),
+        ):
+            status, _ = self.request("POST", path, body, authorized=False)
+            self.assertEqual(status, 401)
+        self.assertEqual(self.turns, [])
+        self.synthesize.assert_not_called()
+
+    def test_vision_is_rejected_over_http_before_hermes(self):
+        status, result = self.request(
+            "POST", "/v1/chat/completions",
+            {"messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}}
+            ]}]},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("turn off Vision", result["error"])
+        self.assertEqual(self.turns, [])
 
 
 class SettingsTests(unittest.TestCase):
