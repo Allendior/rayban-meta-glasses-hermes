@@ -8,6 +8,7 @@ work/
 # Android/Gradle machine-local and generated files.
 .gradle/
 android/.gradle/
+android/.kotlin/
 android/local.properties
 android/**/build/
 android/.android-home/

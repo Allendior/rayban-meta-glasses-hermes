@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.core.content.edit
+import ai.hermes.glasses.voice.ReplyMode
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -21,6 +22,10 @@ class SecureSettings(context: Context) {
     var language: String
         get() = preferences.getString(LANGUAGE_KEY, "en") ?: "en"
         set(value) = preferences.edit { putString(LANGUAGE_KEY, value) }
+
+    var replyMode: ReplyMode
+        get() = ReplyMode.fromStored(preferences.getString(REPLY_MODE_KEY, null))
+        set(value) = preferences.edit { putString(REPLY_MODE_KEY, value.storedValue) }
 
     var sessionId: String?
         get() = preferences.getString(SESSION_KEY, null)
@@ -77,6 +82,7 @@ class SecureSettings(context: Context) {
         const val DEFAULT_URL = ""
         private const val URL_KEY = "bridge_url"
         private const val LANGUAGE_KEY = "language"
+        private const val REPLY_MODE_KEY = "reply_mode"
         private const val SESSION_KEY = "session_id"
         private const val API_KEY = "api_key_ciphertext"
         private const val API_IV = "api_key_iv"

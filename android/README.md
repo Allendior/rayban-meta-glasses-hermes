@@ -13,6 +13,17 @@ bridge running on the Mac mini.
    current audio route. With the glasses selected for Bluetooth media, the
    response plays through the glasses.
 
+The **Reply voice** selector has two modes:
+
+- **Fast Android voice** asks Hermes for text only and uses warmed Android
+  TextToSpeech over the active media route. If Android TTS is unavailable for
+  the selected language, it automatically falls back to cloned speech.
+- **Cloned voice** preserves the original bridge-generated WAV path. It sounds
+  like the configured owner but starts later because synthesis must finish first.
+
+Fast Android voice is not the glasses' private built-in TTS. Bluetooth routing
+still depends on the phone's active media output and needs a physical test.
+
 Typed questions are also supported. Use them to test Tailscale and the bridge
 before completing Meta registration.
 
@@ -43,7 +54,12 @@ The debug APK is generated at
    so this field must be filled in on first run.
 5. Tap **Test Mac bridge**, then **Connect Meta glasses**. Complete the Meta AI
    registration and microphone grant.
-6. Tap **Start glasses listening**, speak, and wait for the cloned reply.
+6. Choose **Fast Android voice** for lowest latency or **Cloned voice** for the
+   configured owner voice. Tap **Start glasses listening**, speak, and wait for
+   the reply.
+
+For the separate experimental path that uses the glasses' actual built-in voice
+through Visor, read [`../docs/VISOR_HERMES_FAST_PATH.md`](../docs/VISOR_HERMES_FAST_PATH.md).
 
 For the milestone acceptance test, disable Wi-Fi before step 5. A successful
 typed question proves the cellular/tailnet/bridge/audio path. A spoken question

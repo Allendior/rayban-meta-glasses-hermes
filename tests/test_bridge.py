@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import http.client
+import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 
@@ -10,6 +13,9 @@ from hermes_voice_bridge.config import Settings, normalize_language
 from hermes_voice_bridge.hermes import HermesClient, HermesError, limit_spoken_reply
 from hermes_voice_bridge.server import (
     BridgeApplication,
+    make_server,
+    openai_messages_to_prompt,
+    openai_model_language,
     public_upstream_error,
     validated_text,
 )
@@ -133,6 +139,143 @@ class PublicReleaseTests(unittest.TestCase):
         script = (ROOT / "scripts" / "configure_target.py").read_text(encoding="utf-8")
         self.assertNotIn('Path.home() / ".hermes" / ".env"', script)
         self.assertIn('os.environ.get("API_SERVER_KEY")', script)
+
+
+class OpenAICompatibilityTests(unittest.TestCase):
+    def test_model_name_selects_supported_spoken_language(self):
+        self.assertEqual(openai_model_language("hermes"), "en")
+        self.assertEqual(openai_model_language("hermes-en"), "en")
+        self.assertEqual(openai_model_language("hermes-hi"), "hi")
+        self.assertEqual(openai_model_language("hermes-fr"), "fr")
+
+    def test_chat_messages_become_a_bounded_conversation_prompt(self):
+        prompt = openai_messages_to_prompt(
+            [
+                {"role": "system", "content": "Be concise."},
+                {"role": "user", "content": "Who is Ada?"},
+                {"role": "assistant", "content": "A computing pioneer."},
+                {"role": "user", "content": "What did she write?"},
+            ],
+            max_chars=500,
+        )
+        self.assertIn("System: Be concise.", prompt)
+        self.assertIn("User: Who is Ada?", prompt)
+        self.assertIn("Assistant: A computing pioneer.", prompt)
+        self.assertTrue(prompt.endswith("User: What did she write?"))
+
+    def test_old_history_is_trimmed_but_latest_question_is_kept(self):
+        prompt = openai_messages_to_prompt(
+            [
+                {"role": "user", "content": "old " * 40},
+                {"role": "assistant", "content": "older " * 30},
+                {"role": "user", "content": "latest question"},
+            ],
+            max_chars=80,
+        )
+        self.assertLessEqual(len(prompt), 80)
+        self.assertEqual(prompt, "User: latest question")
+
+    def test_visual_content_is_rejected_instead_of_silently_ignored(self):
+        with self.assertRaisesRegex(ValueError, "vision"):
+            openai_messages_to_prompt(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "What is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/jpeg;base64,abc"},
+                            },
+                        ],
+                    }
+                ],
+                max_chars=500,
+            )
+
+    def test_latest_user_question_is_required(self):
+        with self.assertRaisesRegex(ValueError, "user message"):
+            openai_messages_to_prompt(
+                [{"role": "system", "content": "Be concise."}],
+                max_chars=500,
+            )
+
+
+class OpenAICompatibilityHttpTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.server = make_server(
+            settings(bridge_port=0), Path(self.temp.name) / "audio"
+        )
+        self.turns = []
+
+        class FakeHermes:
+            def __init__(fake_self, turns):
+                fake_self.turns = turns
+
+            def turn(fake_self, text, session_id=None, language="en"):
+                fake_self.turns.append((text, session_id, language))
+                return "Fast answer.", "session-test"
+
+        self.server.app.hermes = FakeHermes(self.turns)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_address[1], timeout=2
+        )
+
+    def tearDown(self):
+        self.connection.close()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.temp.cleanup()
+
+    def request(self, method, path, payload=None, authorized=True):
+        headers = {"Content-Type": "application/json"}
+        if authorized:
+            headers["Authorization"] = f"Bearer {'b' * 32}"
+        body = json.dumps(payload) if payload is not None else None
+        self.connection.request(method, path, body=body, headers=headers)
+        response = self.connection.getresponse()
+        result = json.loads(response.read().decode("utf-8"))
+        return response.status, result
+
+    def test_visors_chat_completion_shape_calls_hermes_without_tts(self):
+        status, result = self.request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "hermes-hi",
+                "messages": [{"role": "user", "content": "नमस्ते"}],
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["object"], "chat.completion")
+        self.assertEqual(result["choices"][0]["message"]["content"], "Fast answer.")
+        self.assertGreaterEqual(result["hermes_latency_ms"], 0)
+        self.assertEqual(self.turns, [("User: नमस्ते", None, "hi")])
+
+    def test_model_catalogue_requires_the_bridge_key(self):
+        status, _ = self.request("GET", "/v1/models", authorized=False)
+        self.assertEqual(status, 401)
+        status, result = self.request("GET", "/v1/models")
+        self.assertEqual(status, 200)
+        self.assertIn("hermes-fr", [model["id"] for model in result["data"]])
+
+    def test_visors_memory_tools_are_ignored_without_an_extra_retry(self):
+        status, result = self.request(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "hermes",
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [{"type": "function", "function": {"name": "remember"}}],
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["choices"][0]["message"]["content"], "Fast answer.")
+        self.assertEqual(self.turns, [("User: hello", None, "en")])
 
 
 class SettingsTests(unittest.TestCase):

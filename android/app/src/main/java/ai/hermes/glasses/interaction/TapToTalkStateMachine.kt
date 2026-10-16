@@ -65,7 +65,11 @@ class TapToTalkStateMachine {
             current != TapToTalkState.LISTENING -> current to emptyList()
             event.text.isBlank() -> current to emptyList()
             else -> TapToTalkState.BUSY to
-                listOf(TapToTalkEffect.Submit(event.text), TapToTalkEffect.PlayCapturedCue)
+                listOf(
+                    TapToTalkEffect.StopListening,
+                    TapToTalkEffect.PlayCapturedCue,
+                    TapToTalkEffect.Submit(event.text),
+                )
         }
 
         is TapToTalkEvent.ResponseFinished, is TapToTalkEvent.ResponseFailed -> when (current) {

@@ -44,7 +44,11 @@ class TapToTalkStateMachineTest {
         val effects = machine.on(TapToTalkEvent.FinalTranscript("hello there"))
         assertEquals(TapToTalkState.BUSY, machine.state)
         assertEquals(
-            listOf(TapToTalkEffect.Submit("hello there"), TapToTalkEffect.PlayCapturedCue),
+            listOf(
+                TapToTalkEffect.StopListening,
+                TapToTalkEffect.PlayCapturedCue,
+                TapToTalkEffect.Submit("hello there"),
+            ),
             effects,
         )
     }

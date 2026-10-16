@@ -26,12 +26,12 @@ class HermesBridgeClient(
         }
     }
 
-    fun turn(text: String, language: String, sessionId: String?): TurnResponse {
+    fun turn(text: String, language: String, sessionId: String?, speak: Boolean = true): TurnResponse {
         require(apiKey.isNotBlank()) { "Enter the bridge API key" }
         val payload = JSONObject()
             .put("text", text)
             .put("language", language)
-            .put("speak", true)
+            .put("speak", speak)
         if (!sessionId.isNullOrBlank()) payload.put("session_id", sessionId)
 
         val connection = open("/v1/turn", "POST", authenticated = true)
@@ -46,6 +46,23 @@ class HermesBridgeClient(
                 sessionId = json.getString("session_id"),
                 audioPath = json.optString("audio_url").takeIf { it.isNotBlank() && it != "null" },
             )
+        }
+    }
+
+    fun synthesize(text: String, language: String): String {
+        require(apiKey.isNotBlank()) { "Enter the bridge API key" }
+        val payload = JSONObject()
+            .put("text", text)
+            .put("language", language)
+        val connection = open("/v1/synthesize", "POST", authenticated = true)
+        connection.doOutput = true
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+        return connection.useResponse { status, body ->
+            if (status !in 200..299) throw BridgeException(errorMessage(status, body))
+            JSONObject(body).getString("audio_url").also {
+                require(it.startsWith("/v1/audio/")) { "Bridge returned an unexpected audio URL" }
+            }
         }
     }
 

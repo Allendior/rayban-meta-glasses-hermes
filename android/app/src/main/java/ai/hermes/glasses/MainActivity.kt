@@ -7,6 +7,8 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
@@ -30,6 +32,7 @@ import ai.hermes.glasses.interaction.TapToTalkStateMachine
 import ai.hermes.glasses.net.BridgeEndpoint
 import ai.hermes.glasses.net.HermesBridgeClient
 import ai.hermes.glasses.storage.SecureSettings
+import ai.hermes.glasses.voice.ReplyMode
 import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.selectors.AutoDeviceSelector
 import com.meta.wearable.dat.core.session.DeviceSession
@@ -49,6 +52,7 @@ import com.meta.wearable.dat.speech.Speech
 import com.meta.wearable.dat.speech.addSpeech
 import com.meta.wearable.dat.speech.types.SpeechState
 import java.io.File
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
@@ -61,6 +65,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var bridgeUrl: EditText
     private lateinit var apiKey: EditText
     private lateinit var language: Spinner
+    private lateinit var replyMode: Spinner
     private lateinit var prompt: EditText
     private lateinit var status: TextView
     private lateinit var interactionStatus: TextView
@@ -79,6 +84,16 @@ class MainActivity : ComponentActivity() {
     private var speechJobs = mutableListOf<Job>()
     private var player: MediaPlayer? = null
     private var toneGenerator: ToneGenerator? = null
+    private var systemTts: TextToSpeech? = null
+    private var systemTtsReady = false
+    private var activeFastReply: FastReply? = null
+
+    private data class FastReply(
+        val utteranceId: String,
+        val client: HermesBridgeClient,
+        val text: String,
+        val language: String,
+    )
 
     /** Pure idle/listening/busy transitions live here; see ai.hermes.glasses.interaction. */
     private val tapToTalk = TapToTalkStateMachine()
@@ -102,6 +117,7 @@ class MainActivity : ComponentActivity() {
         populateSettings()
         wireActions()
         toneGenerator = runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, 70) }.getOrNull()
+        initializeSystemTts()
         updateInteractionUi()
         ensureBluetoothThenInitialize()
     }
@@ -111,6 +127,10 @@ class MainActivity : ComponentActivity() {
         player = null
         toneGenerator?.release()
         toneGenerator = null
+        activeFastReply = null
+        systemTts?.stop()
+        systemTts?.shutdown()
+        systemTts = null
         speechJobs.forEach(Job::cancel)
         sessionJob?.cancel()
         if (isFinishing) {
@@ -382,20 +402,29 @@ class MainActivity : ComponentActivity() {
             return
         }
         saveSettings(normalizedUrl, key)
-        showStatus("Asking Hermes… cloned speech can take several seconds")
+        val mode = selectedReplyMode()
+        val turnLanguage = selectedLanguage()
+        showStatus(
+            if (mode == ReplyMode.FAST_SYSTEM) "Asking Hermes… fast voice is ready"
+            else "Asking Hermes… cloned speech can take several seconds",
+        )
         lifecycleScope.launch {
             try {
                 val client = HermesBridgeClient(normalizedUrl, key)
                 val response = withContext(Dispatchers.IO) {
-                    client.turn(question, selectedLanguage(), settings.sessionId)
+                    client.turn(
+                        question,
+                        turnLanguage,
+                        settings.sessionId,
+                        speak = mode.requestClonedAudio,
+                    )
                 }
                 settings.sessionId = response.sessionId
                 answer.text = "Hermes: ${response.text}"
                 if (response.audioPath != null) {
-                    val file = File(cacheDir, "hermes-reply-${System.currentTimeMillis()}.wav")
-                    withContext(Dispatchers.IO) { client.downloadAudio(response.audioPath, file) }
-                    play(file)
-                    showStatus("Playing Hermes in the cloned voice")
+                    downloadAndPlay(client, response.audioPath, "Playing Hermes in the cloned voice")
+                } else if (mode.useSystemTts) {
+                    speakWithSystemVoice(client, response.text, turnLanguage)
                 } else {
                     showStatus("Hermes answered without audio")
                     dispatch(TapToTalkEvent.ResponseFinished)
@@ -405,6 +434,105 @@ class MainActivity : ComponentActivity() {
                 dispatch(TapToTalkEvent.ResponseFailed)
             }
         }
+    }
+
+    private fun initializeSystemTts() {
+        systemTts = TextToSpeech(applicationContext) { result ->
+            systemTtsReady = result == TextToSpeech.SUCCESS
+            if (!systemTtsReady) return@TextToSpeech
+            systemTts?.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            systemTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+
+                override fun onDone(utteranceId: String?) {
+                    runOnUiThread {
+                        val active = activeFastReply
+                        if (active?.utteranceId != utteranceId) return@runOnUiThread
+                        activeFastReply = null
+                        showStatus("Fast Android voice finished")
+                        dispatch(TapToTalkEvent.ResponseFinished)
+                    }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    runOnUiThread { handleSystemTtsFailure(utteranceId) }
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    runOnUiThread { handleSystemTtsFailure(utteranceId) }
+                }
+            })
+        }
+    }
+
+    private fun speakWithSystemVoice(client: HermesBridgeClient, text: String, language: String) {
+        val reply = FastReply(
+            utteranceId = "hermes-fast-${System.currentTimeMillis()}",
+            client = client,
+            text = text,
+            language = language,
+        )
+        activeFastReply = reply
+        val tts = systemTts
+        if (!systemTtsReady || tts == null) {
+            fallbackToClonedVoice(reply, "Fast Android voice is not ready")
+            return
+        }
+        val locale = when (language) {
+            "hi" -> Locale.forLanguageTag("hi-IN")
+            "fr" -> Locale.forLanguageTag("fr-FR")
+            else -> Locale.forLanguageTag("en-US")
+        }
+        if (tts.setLanguage(locale) < TextToSpeech.LANG_AVAILABLE) {
+            fallbackToClonedVoice(reply, "Fast Android voice has no $language language pack")
+            return
+        }
+        val result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, reply.utteranceId)
+        if (result == TextToSpeech.ERROR) {
+            fallbackToClonedVoice(reply, "Fast Android voice could not start")
+        } else {
+            showStatus("Speaking with fast Android voice over the active media route")
+        }
+    }
+
+    private fun handleSystemTtsFailure(utteranceId: String?) {
+        val reply = activeFastReply ?: return
+        if (reply.utteranceId != utteranceId) return
+        fallbackToClonedVoice(reply, "Fast Android voice failed")
+    }
+
+    private fun fallbackToClonedVoice(reply: FastReply, reason: String) {
+        if (activeFastReply?.utteranceId != reply.utteranceId) return
+        activeFastReply = null
+        showStatus("$reason; generating cloned voice…")
+        lifecycleScope.launch {
+            try {
+                val audioPath = withContext(Dispatchers.IO) {
+                    reply.client.synthesize(reply.text, reply.language)
+                }
+                downloadAndPlay(reply.client, audioPath, "Playing cloned-voice fallback")
+            } catch (error: Exception) {
+                showStatus(error.message ?: "Both fast and cloned speech failed")
+                dispatch(TapToTalkEvent.ResponseFailed)
+            }
+        }
+    }
+
+    private suspend fun downloadAndPlay(
+        client: HermesBridgeClient,
+        audioPath: String,
+        playingMessage: String,
+    ) {
+        val file = File(cacheDir, "hermes-reply-${System.currentTimeMillis()}.wav")
+        withContext(Dispatchers.IO) { client.downloadAudio(audioPath, file) }
+        play(file)
+        showStatus(playingMessage)
     }
 
     private fun testBridge() {
@@ -462,9 +590,15 @@ class MainActivity : ComponentActivity() {
         else -> "en"
     }
 
+    private fun selectedReplyMode(): ReplyMode = when (replyMode.selectedItemPosition) {
+        0 -> ReplyMode.FAST_SYSTEM
+        else -> ReplyMode.CLONED
+    }
+
     private fun saveSettings(url: String, key: String) {
         settings.bridgeUrl = url
         settings.language = selectedLanguage()
+        settings.replyMode = selectedReplyMode()
         settings.saveApiKey(key)
     }
 
@@ -472,6 +606,7 @@ class MainActivity : ComponentActivity() {
         bridgeUrl.setText(settings.bridgeUrl)
         apiKey.setText(settings.loadApiKey())
         language.setSelection(when (settings.language) { "hi" -> 1; "fr" -> 2; else -> 0 })
+        replyMode.setSelection(if (settings.replyMode == ReplyMode.FAST_SYSTEM) 0 else 1)
     }
 
     private fun wireActions() {
@@ -523,6 +658,18 @@ class MainActivity : ComponentActivity() {
             )
         }
         content.addView(language, rowParams())
+
+        replyMode = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf(
+                    "Fast Android voice (active Bluetooth route)",
+                    "Cloned voice (slower)",
+                ),
+            )
+        }
+        content.addView(replyMode, rowParams())
 
         content.addView(Button(this).apply { id = R.id.test_bridge; text = "Test Mac bridge" }, rowParams())
         registrationButton = Button(this).apply { text = "Connect Meta glasses" }

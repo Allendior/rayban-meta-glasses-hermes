@@ -7,6 +7,8 @@ import json
 import logging
 from pathlib import Path
 import threading
+import time
+import uuid
 from urllib.parse import parse_qs, urlparse
 
 from .config import Settings, normalize_language
@@ -15,6 +17,8 @@ from .speech import SpeechError, SpeechService
 
 
 LOGGER = logging.getLogger(__name__)
+
+OPENAI_MODELS = ("hermes", "hermes-en", "hermes-hi", "hermes-fr")
 
 
 def public_upstream_error(error: Exception) -> str:
@@ -30,6 +34,83 @@ def validated_text(value: object, max_chars: int) -> str:
     if len(text) > max_chars:
         raise ValueError(f"text is too long (maximum {max_chars} characters)")
     return text
+
+
+def openai_model_language(model: object) -> str:
+    """Map the small model catalogue exposed to Visor onto bridge languages."""
+    name = str(model or "hermes").strip().lower()
+    if name.endswith("-hi"):
+        return "hi"
+    if name.endswith("-fr"):
+        return "fr"
+    return "en"
+
+
+def _openai_message_text(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        raise ValueError("message content must be text")
+    parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            raise ValueError("message content must be text")
+        kind = str(part.get("type") or "")
+        if kind == "text":
+            text = str(part.get("text") or "").strip()
+            if text:
+                parts.append(text)
+        elif kind in {"image_url", "input_image", "image"}:
+            raise ValueError(
+                "vision is not supported by the Hermes bridge adapter; "
+                "turn off Vision in Visor"
+            )
+        else:
+            raise ValueError(f"unsupported message content type: {kind or 'unknown'}")
+    return "\n".join(parts)
+
+
+def openai_messages_to_prompt(messages: object, max_chars: int) -> str:
+    """Turn OpenAI chat history into a bounded transcript for one Hermes turn.
+
+    Visor already sends recent history on every request. The bridge therefore does
+    not need to invent a cross-request session identifier: it sends the bounded
+    transcript to a fresh Hermes session and preferentially drops the oldest turns.
+    """
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("messages must be a non-empty array")
+
+    labels = {"system": "System", "user": "User", "assistant": "Assistant"}
+    lines: list[tuple[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ValueError("each message must be an object")
+        role = str(message.get("role") or "").lower()
+        if role not in labels:
+            raise ValueError(f"unsupported message role: {role or 'unknown'}")
+        text = _openai_message_text(message.get("content"))
+        if text:
+            lines.append((role, f"{labels[role]}: {text}"))
+
+    latest_user = next(
+        (index for index in range(len(lines) - 1, -1, -1) if lines[index][0] == "user"),
+        None,
+    )
+    if latest_user is None:
+        raise ValueError("a user message is required")
+
+    newest = lines[latest_user][1]
+    if len(newest) > max_chars:
+        raise ValueError(f"latest user message is too long (maximum {max_chars} characters)")
+
+    selected = [newest]
+    used = len(newest)
+    for _, line in reversed(lines[:latest_user]):
+        added = len(line) + 1
+        if used + added <= max_chars:
+            selected.insert(0, line)
+            used += added
+    return "\n".join(selected)
 
 
 class BridgeApplication:
@@ -98,6 +179,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path == "/v1/models":
+            if not self._require_auth():
+                return
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "object": "list",
+                    "data": [
+                        {
+                            "id": model,
+                            "object": "model",
+                            "created": 0,
+                            "owned_by": "hermes-glasses-bridge",
+                        }
+                        for model in OPENAI_MODELS
+                    ],
+                },
+            )
+            return
         if path.startswith("/v1/audio/"):
             if not self._require_auth():
                 return
@@ -138,6 +238,48 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _handle_post(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/v1/chat/completions":
+                payload = self._read_json()
+                # Visor advertises its local memory tools on normal turns. Hermes has
+                # its own tool system, so accepting and ignoring these declarations
+                # avoids a guaranteed failed request/retry on every spoken question.
+                model = str(payload.get("model") or "hermes").strip() or "hermes"
+                prompt = openai_messages_to_prompt(
+                    payload.get("messages"), self.app.settings.max_text_chars
+                )
+                started = time.monotonic()
+                reply, _ = self.app.hermes.turn(
+                    prompt,
+                    language=openai_model_language(model),
+                )
+                latency_ms = round((time.monotonic() - started) * 1000)
+                LOGGER.info(
+                    "OpenAI-compatible Hermes turn completed: model=%s prompt_chars=%d latency_ms=%d",
+                    model,
+                    len(prompt),
+                    latency_ms,
+                )
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "id": f"chatcmpl-{uuid.uuid4().hex}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": model,
+                        "hermes_latency_ms": latency_ms,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": reply,
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    },
+                )
+                return
             if parsed.path == "/v1/turn":
                 payload = self._read_json()
                 text = validated_text(

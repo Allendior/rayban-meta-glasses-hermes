@@ -37,6 +37,13 @@ Device Access Toolkit for speech recognition on the glasses, sends final
 transcripts to this bridge over Tailscale, and plays authenticated cloned-voice
 replies through the phone's active Bluetooth audio route.
 
+An experimental [Visor fast path](docs/VISOR_HERMES_FAST_PATH.md) lets Visor use
+the glasses' wake word, first-turn transcript, and built-in glasses TTS while
+Hermes continues to provide the answer. It avoids cloned-audio synthesis and
+download latency. Ray-Ban Meta Gen 1 compatibility and physical glasses audio
+are still unverified, so read the pairing, privacy-light, and rollback notes
+before trying it.
+
 ## What you need
 
 - **Meta Ray-Ban (or similar Meta AI) glasses**, paired to an Android phone
@@ -164,6 +171,9 @@ All `/v1/*` requests require `Authorization: Bearer <BRIDGE_API_KEY>`.
 - `POST /v1/synthesize` accepts JSON such as
   `{"text":"Bonjour","language":"fr"}`.
 - `GET /v1/audio/<id>` returns generated audio.
+- `GET /v1/models` lists the Hermes aliases available to OpenAI-compatible clients.
+- `POST /v1/chat/completions` accepts the non-streaming OpenAI chat-completions
+  shape used by Visor. Use `hermes-en`, `hermes-hi`, or `hermes-fr` as the model.
 
 `session_id` returned by `/v1/turn` should be sent back on later turns.
 
