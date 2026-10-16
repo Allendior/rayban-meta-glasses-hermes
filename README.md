@@ -195,6 +195,14 @@ TTS_REFERENCE_AUDIO=/absolute/path/to/my-voice.wav
 TTS_COMMAND=/absolute/path/to/python /absolute/path/to/chatterbox_tts.py --text-file {text_file} --output {output_file} --language {language} --reference {reference_audio}
 ```
 
+For MLX-based cloned voices, `TTS_WORKER_COMMAND` can keep the model loaded
+between replies. It receives JSON lines containing `text`, `language`, and
+`output_file`, and must print `{"ready": true}` once at startup followed by
+`{"ok": true}` after each generated file. The bundled Chatterbox worker is
+configured automatically by `scripts/configure_target.py` when a reference is
+provided. The first reply after a bridge restart still pays model-load time;
+later replies avoid that repeated startup cost.
+
 The target install generates this command automatically when the owner reference
 exists; keys and voice recordings remain outside version control.
 

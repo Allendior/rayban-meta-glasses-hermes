@@ -387,6 +387,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        server.app.speech.close()  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":

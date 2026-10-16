@@ -29,6 +29,7 @@ class Settings:
     hermes_api_key: str
     tts_provider: str
     tts_command: str
+    tts_worker_command: str
     tts_reference_audio: str
     stt_command: str
     audio_ttl_seconds: int
@@ -51,6 +52,7 @@ class Settings:
             hermes_api_key=os.environ.get("HERMES_API_KEY", "").strip(),
             tts_provider=provider,
             tts_command=os.environ.get("TTS_COMMAND", "").strip(),
+            tts_worker_command=os.environ.get("TTS_WORKER_COMMAND", "").strip(),
             tts_reference_audio=os.environ.get("TTS_REFERENCE_AUDIO", "").strip(),
             stt_command=os.environ.get("STT_COMMAND", "").strip(),
             audio_ttl_seconds=_positive_int("AUDIO_TTL_SECONDS", 3600),

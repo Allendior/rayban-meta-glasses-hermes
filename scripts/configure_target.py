@@ -67,6 +67,7 @@ def main() -> int:
     reference = ""
     provider = "macos"
     command = ""
+    worker_command = ""
     if args.reference_audio:
         reference_path = Path(args.reference_audio).expanduser().resolve()
         if not reference_path.is_file():
@@ -77,6 +78,10 @@ def main() -> int:
             f"{ROOT}/.venv/bin/python {ROOT}/scripts/chatterbox_tts.py "
             "--text-file {text_file} --output {output_file} --language {language} "
             "--reference {reference_audio}"
+        )
+        worker_command = (
+            f"{ROOT}/.venv/bin/python {ROOT}/scripts/chatterbox_tts.py "
+            "--worker --reference {reference_audio}"
         )
 
     lines = [
@@ -92,6 +97,7 @@ def main() -> int:
         "TTS_VOICE_FR=Thomas",
         f"TTS_REFERENCE_AUDIO={reference}",
         f"TTS_COMMAND='{command}'" if command else "TTS_COMMAND=",
+        f"TTS_WORKER_COMMAND='{worker_command}'" if worker_command else "TTS_WORKER_COMMAND=",
         "CHATTERBOX_MODEL=mlx-community/chatterbox-multilingual-v3",
         "CHATTERBOX_MODEL_REVISION=03565773edd72e949572557597af8063bb49a18a",
         f"HF_HOME={ROOT}/work/voice-models",

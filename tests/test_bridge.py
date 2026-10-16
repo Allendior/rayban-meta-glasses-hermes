@@ -4,6 +4,7 @@ from pathlib import Path
 import http.client
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -35,6 +36,7 @@ def settings(**changes):
         hermes_api_key="h" * 32,
         tts_provider="macos",
         tts_command="",
+        tts_worker_command="",
         tts_reference_audio="",
         stt_command="",
         audio_ttl_seconds=3600,
@@ -445,6 +447,39 @@ class SpeechServiceTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"fr:Bonjour")
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
             self.assertEqual(media_type, "audio/wav")
+
+    def test_worker_provider_reuses_one_process_for_multiple_replies(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script = root / "fake_worker.py"
+            script.write_text(
+                "import json, pathlib, sys\n"
+                "print(json.dumps({'ready': True}), flush=True)\n"
+                "for raw in sys.stdin:\n"
+                "    request = json.loads(raw)\n"
+                "    if request.get('shutdown'):\n"
+                "        break\n"
+                "    pathlib.Path(request['output_file']).write_bytes(\n"
+                "        (request['language'] + ':' + request['text']).encode()\n"
+                "    )\n"
+                "    print(json.dumps({'ok': True}), flush=True)\n",
+                encoding="utf-8",
+            )
+            reference = root / "voice.wav"
+            reference.write_bytes(b"voice")
+            cfg = settings(
+                tts_provider="command",
+                tts_reference_audio=str(reference),
+                tts_worker_command=f"{sys.executable} {script} {{reference_audio}}",
+            )
+            service = SpeechService(cfg, root / "audio")
+            try:
+                _, first, _ = service.synthesize("First", "en")
+                _, second, _ = service.synthesize("Second", "hi")
+                self.assertEqual(first.read_bytes(), b"en:First")
+                self.assertEqual(second.read_bytes(), b"hi:Second")
+            finally:
+                service.close()
 
 
 if __name__ == "__main__":
