@@ -288,13 +288,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/v1/turn":
                 payload = self._read_json()
+                request_started = time.monotonic()
                 text = validated_text(
                     payload.get("text"), self.app.settings.max_text_chars
                 )
                 language = normalize_language(payload.get("language"))
                 session_value = payload.get("session_id")
                 session_id = str(session_value).strip() if session_value else None
+                hermes_started = time.monotonic()
                 reply, session_id = self.app.hermes.turn(text, session_id, language)
+                timing_ms = {"hermes": round((time.monotonic() - hermes_started) * 1000)}
                 response = {
                     "session_id": session_id,
                     "language": language,
@@ -302,8 +305,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "audio_url": None,
                 }
                 if payload.get("speak", True):
+                    tts_started = time.monotonic()
                     audio_id, _, _ = self.app.speech.synthesize(reply, language)
+                    timing_ms["tts"] = round((time.monotonic() - tts_started) * 1000)
                     response["audio_url"] = f"/v1/audio/{audio_id}"
+                timing_ms["total"] = round((time.monotonic() - request_started) * 1000)
+                response["timing_ms"] = timing_ms
+                LOGGER.info(
+                    "turn completed: language=%s prompt_chars=%d reply_chars=%d timing_ms=%s",
+                    language,
+                    len(text),
+                    len(reply),
+                    timing_ms,
+                )
                 self._json(HTTPStatus.OK, response)
                 return
             if parsed.path == "/v1/synthesize":
@@ -312,13 +326,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     payload.get("text"), self.app.settings.max_text_chars
                 )
                 language = normalize_language(payload.get("language"))
+                tts_started = time.monotonic()
                 audio_id, _, media_type = self.app.speech.synthesize(text, language)
+                tts_ms = round((time.monotonic() - tts_started) * 1000)
                 self._json(
                     HTTPStatus.CREATED,
                     {
                         "language": language,
                         "media_type": media_type,
                         "audio_url": f"/v1/audio/{audio_id}",
+                        "timing_ms": {"tts": tts_ms, "total": tts_ms},
                     },
                 )
                 return

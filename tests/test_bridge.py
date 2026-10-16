@@ -318,6 +318,8 @@ class OpenAICompatibilityHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertIsNone(first["audio_url"])
+        self.assertIn("hermes", first["timing_ms"])
+        self.assertIn("total", first["timing_ms"])
         status, second = self.request(
             "POST", "/v1/turn",
             {"text": "Et ensuite?", "language": "fr", "speak": False,
@@ -337,6 +339,7 @@ class OpenAICompatibilityHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 201)
         self.assertEqual(result["audio_url"], "/v1/audio/testaudio")
+        self.assertIn("tts", result["timing_ms"])
         self.synthesize.assert_called_once_with("Fast answer.", "hi")
         self.assertEqual(self.turns, [])
 
@@ -348,6 +351,8 @@ class OpenAICompatibilityHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(result["audio_url"], "/v1/audio/testaudio")
+        self.assertIn("hermes", result["timing_ms"])
+        self.assertIn("tts", result["timing_ms"])
         self.synthesize.assert_called_once_with("Fast answer.", "en")
 
     def test_streaming_is_rejected_before_spending_a_hermes_turn(self):

@@ -429,7 +429,12 @@ class MainActivity : ComponentActivity() {
                 settings.sessionId = response.sessionId
                 answer.text = "Hermes: ${response.text}"
                 if (response.audioPath != null) {
-                    downloadAndPlay(client, response.audioPath, "Playing Hermes in the cloned voice")
+                    downloadAndPlay(
+                        client,
+                        response.audioPath,
+                        "Playing Hermes in the cloned voice",
+                        response.timingMs,
+                    )
                 } else if (mode.useSystemTts) {
                     speakWithSystemVoice(client, response.text, turnLanguage)
                 } else {
@@ -578,11 +583,19 @@ class MainActivity : ComponentActivity() {
         client: HermesBridgeClient,
         audioPath: String,
         playingMessage: String,
+        serverTimingMs: Map<String, Long> = emptyMap(),
     ) {
         val file = File(cacheDir, "hermes-reply-${System.currentTimeMillis()}.wav")
+        val downloadStarted = System.nanoTime()
         withContext(Dispatchers.IO) { client.downloadAudio(audioPath, file) }
+        val downloadMs = (System.nanoTime() - downloadStarted) / 1_000_000
         play(file)
-        showStatus(playingMessage)
+        val timing = listOfNotNull(
+            serverTimingMs["hermes"]?.let { "Hermes ${it} ms" },
+            serverTimingMs["tts"]?.let { "cloned voice ${it} ms" },
+            "download ${downloadMs} ms",
+        ).joinToString(", ")
+        showStatus(if (timing.isEmpty()) playingMessage else "$playingMessage — $timing")
     }
 
     private fun testBridge() {

@@ -9,6 +9,7 @@ data class TurnResponse(
     val text: String,
     val sessionId: String,
     val audioPath: String?,
+    val timingMs: Map<String, Long>,
 )
 
 class HermesBridgeClient(
@@ -45,6 +46,7 @@ class HermesBridgeClient(
                 text = json.getString("text"),
                 sessionId = json.getString("session_id"),
                 audioPath = json.optString("audio_url").takeIf { it.isNotBlank() && it != "null" },
+                timingMs = json.optJSONObject("timing_ms").toLongMap(),
             )
         }
     }
@@ -106,6 +108,17 @@ class HermesBridgeClient(
         }
         return "Bridge returned HTTP $status${detail.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}"
     }
+}
+
+private fun JSONObject?.toLongMap(): Map<String, Long> {
+    if (this == null) return emptyMap()
+    val values = mutableMapOf<String, Long>()
+    val keys = keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        values[key] = optLong(key)
+    }
+    return values
 }
 
 class BridgeException(message: String) : Exception(message)
