@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run cold multilingual Chatterbox samples and save a machine-readable benchmark."""
+"""Run warm multilingual cloned-voice samples and save a benchmark."""
 
 from __future__ import annotations
 
@@ -29,7 +29,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("reference_audio")
     parser.add_argument("--output-dir", default="work/benchmarks")
-    parser.add_argument("--model", default="mlx-community/chatterbox-multilingual-v3")
+    parser.add_argument("--engine", choices=("omnivoice", "chatterbox"), default="omnivoice")
+    parser.add_argument("--model")
+    parser.add_argument("--reference-text", default="")
+    parser.add_argument("--num-steps", type=int, default=16)
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
@@ -40,47 +43,77 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     records = []
 
-    for name, text in SAMPLES.items():
-        language = "en" if name == "mixed" else name
-        text_file = output_dir / f"{name}.txt"
-        output_file = output_dir / f"{name}.wav"
-        text_file.write_text(text, encoding="utf-8")
-        command = [
-            sys.executable,
-            str(root / "scripts" / "chatterbox_tts.py"),
-            "--text-file",
-            str(text_file),
-            "--output",
-            str(output_file),
-            "--language",
-            language,
-            "--reference",
-            str(reference),
-            "--model",
-            args.model,
-        ]
-        started = time.monotonic()
-        completed = subprocess.run(command, text=True, capture_output=True, check=False)
-        elapsed = time.monotonic() - started
-        record = {
-            "sample": name,
-            "language": language,
-            "elapsed_seconds": round(elapsed, 3),
-            "success": completed.returncode == 0 and output_file.is_file(),
-        }
-        if record["success"]:
-            duration = wav_duration(output_file)
-            record["audio_seconds"] = round(duration, 3)
-            record["real_time_factor"] = round(elapsed / duration, 3)
-        else:
-            record["error"] = (completed.stderr or completed.stdout)[-1000:]
-        records.append(record)
-        print(json.dumps(record, ensure_ascii=False), flush=True)
-        if not record["success"]:
-            break
+    script_name = "omnivoice_tts.py" if args.engine == "omnivoice" else "chatterbox_tts.py"
+    command = [
+        sys.executable,
+        str(root / "scripts" / script_name),
+        "--worker",
+        "--reference",
+        str(reference),
+    ]
+    if args.model:
+        command.extend(["--model", args.model])
+    if args.engine == "omnivoice":
+        command.extend(["--num-steps", str(args.num_steps)])
+        if args.reference_text:
+            command.extend(["--reference-text", args.reference_text])
+
+    worker = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        if worker.stdout is None or worker.stdin is None:
+            raise RuntimeError("could not open TTS worker pipes")
+        ready = worker.stdout.readline().strip()
+        if json.loads(ready).get("ready") is not True:
+            raise RuntimeError("TTS worker did not become ready")
+        for name, text in SAMPLES.items():
+            language = "en" if name == "mixed" else name
+            output_file = output_dir / f"{name}.wav"
+            started = time.monotonic()
+            worker.stdin.write(
+                json.dumps(
+                    {"text": text, "language": language, "output_file": str(output_file)}
+                )
+                + "\n"
+            )
+            worker.stdin.flush()
+            response = json.loads(worker.stdout.readline())
+            elapsed = time.monotonic() - started
+            record = {
+                "sample": name,
+                "language": language,
+                "elapsed_seconds": round(elapsed, 3),
+                "success": response.get("ok") is True and output_file.is_file(),
+            }
+            if record["success"]:
+                duration = wav_duration(output_file)
+                record["audio_seconds"] = round(duration, 3)
+                record["real_time_factor"] = round(elapsed / duration, 3)
+            else:
+                record["error"] = "TTS worker failed"
+            records.append(record)
+            print(json.dumps(record, ensure_ascii=False), flush=True)
+            if not record["success"]:
+                break
+    finally:
+        if worker.stdin is not None and worker.poll() is None:
+            worker.stdin.write(json.dumps({"shutdown": True}) + "\n")
+            worker.stdin.flush()
+        worker.wait(timeout=30)
 
     report = {
-        "model": args.model,
+        "engine": args.engine,
+        "model": args.model
+        or (
+            "mlx-community/OmniVoice-bfloat16"
+            if args.engine == "omnivoice"
+            else "mlx-community/chatterbox-multilingual-v3"
+        ),
         "reference_audio": str(reference),
         "samples": records,
     }

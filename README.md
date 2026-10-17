@@ -135,11 +135,13 @@ voice recordings.
 The install script preserves the bridge API key across reinstalls. It also
 copies a prepared `work/voice-reference/owner-reference.wav`, if present, and
 automatically switches the deployed service from the system voice to
-Chatterbox.
+OmniVoice. Pass `VOICE_ENGINE=chatterbox ./scripts/install_service.sh` when the
+older Chatterbox path is needed as a fallback.
 
 ## Voice-cloning setup
 
-Install the pinned MLX runtime in the isolated project environment:
+Install the pinned MLX runtime and the local audio encoder in the isolated
+project environment:
 
 ```sh
 UV_CACHE_DIR="$TMPDIR/hermes-glasses-uv-cache" uv sync --extra voice --locked
@@ -201,10 +203,23 @@ between replies. It receives JSON lines containing `text`, `language`, and
 `{"ok": true}` after each generated file. The bundled Chatterbox worker is
 configured automatically by `scripts/configure_target.py` when a reference is
 provided. The first reply after a bridge restart still pays model-load time;
-later replies avoid that repeated startup cost.
+later replies avoid that repeated startup cost. With the default configuration,
+the bundled OmniVoice worker is selected; Chatterbox remains available through
+the fallback command shown above.
 
 The target install generates this command automatically when the owner reference
-exists; keys and voice recordings remain outside version control.
+exists; keys and voice recordings remain outside version control. OmniVoice uses
+the same reference clip for English, Hindi, and French. For best cross-language
+cloning, set the private `OMNIVOICE_REFERENCE_TEXT` value in the generated
+`.env` to the exact words spoken in the clean reference clip. If it is empty,
+the bridge still clones from the preprocessed audio, but the model documentation
+warns that alignment can be less stable.
+
+OmniVoice is a local MLX model with a 0.6B Qwen backbone and a 24 kHz HiggsAudio
+decoder. The default worker uses 16 diffusion steps to reduce latency and keeps
+the encoded reference prompt in memory between replies. The MLX model is
+downloaded from Hugging Face on first use; its pinned revision and license are
+listed in `THIRD_PARTY_NOTICES.md`.
 
 The STT command uses the same pattern with `{input_file}`, `{output_file}`, and
 `{language}`; it must write the transcript as UTF-8 text.

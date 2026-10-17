@@ -21,13 +21,19 @@ terms. Those terms continue to apply.
 - **Gradle Wrapper 9.5.0**: Apache License 2.0. Its distribution checksum is
   pinned in `android/gradle/wrapper/gradle-wrapper.properties`.
   <https://github.com/gradle/gradle/blob/master/LICENSE>
-- **MLX-Audio 0.4.8**: MIT License. Python dependencies are pinned in
+- **MLX-Audio 0.5.9**: MIT License. Python dependencies are pinned in
   `uv.lock`.
-  <https://pypi.org/project/mlx-audio/0.4.8/>
+  <https://pypi.org/project/mlx-audio/0.5.9/>
+- **PyTorch and torchaudio**: BSD-style licenses. They are used by OmniVoice's
+  local reference-audio encoder; Python dependencies are pinned in `uv.lock`.
+  <https://pytorch.org/>
 - **Chatterbox Multilingual v3 MLX model**: MIT License. The default model
   revision is pinned to commit
   `03565773edd72e949572557597af8063bb49a18a`.
   <https://huggingface.co/mlx-community/chatterbox-multilingual-v3>
+- **OmniVoice MLX model**: Apache License 2.0. The default model revision is
+  pinned to commit `6119f7072580cc30c3cbdf496269216b03ad9742`.
+  <https://huggingface.co/mlx-community/OmniVoice-bfloat16>
 
 ## Runtime choices
 

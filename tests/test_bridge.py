@@ -22,6 +22,7 @@ from hermes_voice_bridge.server import (
     validated_text,
 )
 from hermes_voice_bridge.speech import SpeechError, SpeechService
+from scripts.omnivoice_tts import build_generation_kwargs, language_name
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,6 +54,30 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(normalize_language("fr-CA"), "fr")
         with self.assertRaises(ValueError):
             normalize_language("de")
+
+
+class OmniVoiceTests(unittest.TestCase):
+    def test_supported_language_names_are_explicit(self):
+        self.assertEqual(language_name("en"), "english")
+        self.assertEqual(language_name("hi"), "hindi")
+        self.assertEqual(language_name("fr"), "french")
+        with self.assertRaises(ValueError):
+            language_name("de")
+
+    def test_generation_reuses_preprocessed_reference_prompt(self):
+        kwargs = build_generation_kwargs(
+            text="Bonjour depuis les lunettes.",
+            language="fr",
+            ref_tokens="cached-reference-tokens",
+            ref_text="This is the reference transcript.",
+            duration_s=6.5,
+            num_steps=16,
+        )
+        self.assertEqual(kwargs["language"], "french")
+        self.assertEqual(kwargs["ref_tokens"], "cached-reference-tokens")
+        self.assertEqual(kwargs["ref_text"], "This is the reference transcript.")
+        self.assertEqual(kwargs["duration_s"], 6.5)
+        self.assertEqual(kwargs["num_steps"], 16)
 
 
 class HermesClientTests(unittest.TestCase):
@@ -142,6 +167,12 @@ class PublicReleaseTests(unittest.TestCase):
         script = (ROOT / "scripts" / "configure_target.py").read_text(encoding="utf-8")
         self.assertNotIn('Path.home() / ".hermes" / ".env"', script)
         self.assertIn('os.environ.get("API_SERVER_KEY")', script)
+
+    def test_configure_script_supports_omnivoice_and_chatterbox_fallback(self):
+        script = (ROOT / "scripts" / "configure_target.py").read_text(encoding="utf-8")
+        self.assertIn('"omnivoice"', script)
+        self.assertIn('"chatterbox"', script)
+        self.assertIn("omnivoice_tts.py", script)
 
 
 class OpenAICompatibilityTests(unittest.TestCase):

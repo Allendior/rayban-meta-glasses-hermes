@@ -10,7 +10,9 @@ dependencies = []
 
 [project.optional-dependencies]
 voice = [
-  "mlx-audio==0.4.8",
+  "mlx-audio==0.5.9",
+  "torch>=2.11.0",
+  "torchaudio>=2.11.0",
 ]
 
 [tool.uv]

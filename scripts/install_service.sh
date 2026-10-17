@@ -27,7 +27,7 @@ mkdir -p "$runtime_dir/scripts" "$runtime_dir/work/logs" "$HOME/Library/LaunchAg
 # LaunchAgents cannot traverse macOS-protected Documents folders reliably. Keep
 # the editable source here, but run a small deployed copy from Application Data.
 /usr/bin/ditto "$project_dir/hermes_voice_bridge" "$runtime_dir/hermes_voice_bridge"
-for script in run_bridge.sh chatterbox_tts.py configure_target.py; do
+for script in run_bridge.sh chatterbox_tts.py omnivoice_tts.py configure_target.py; do
   install -m 755 "$project_dir/scripts/$script" "$runtime_dir/scripts/$script"
 done
 
