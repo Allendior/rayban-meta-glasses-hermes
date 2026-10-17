@@ -31,7 +31,7 @@ terms. Those terms continue to apply.
   revision is pinned to commit
   `03565773edd72e949572557597af8063bb49a18a`.
   <https://huggingface.co/mlx-community/chatterbox-multilingual-v3>
-- **OmniVoice MLX model**: Apache License 2.0. The default model revision is
+- **OmniVoice MLX model**: Apache License 2.0. The optional model revision is
   pinned to commit `6119f7072580cc30c3cbdf496269216b03ad9742`.
   <https://huggingface.co/mlx-community/OmniVoice-bfloat16>
 

@@ -53,8 +53,8 @@ def main() -> int:
     parser.add_argument(
         "--voice-engine",
         choices=("omnivoice", "chatterbox"),
-        default=os.environ.get("VOICE_ENGINE", "omnivoice").strip().lower(),
-        help="Cloned-voice engine; OmniVoice is the default multilingual engine.",
+        default=os.environ.get("VOICE_ENGINE", "chatterbox").strip().lower(),
+        help="Cloned-voice engine; Chatterbox is the default, OmniVoice is experimental.",
     )
     args = parser.parse_args()
 

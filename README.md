@@ -1,125 +1,106 @@
-# Ray-Ban Meta Glasses + Hermes
+# Ray-Ban Meta Glasses × Hermes
 
-Connect your Ray-Ban Meta glasses to your own Hermes AI agent instead of
-Meta's built in assistant. Ask it something out loud on the glasses, it
-thinks with your own Hermes agent, and answers back in your own cloned voice.
-Everything between the phone and bridge runs over your private Tailscale
-network. The bridge stays on your Mac. Meta still handles the glasses and
-speech features it provides, and Hermes uses whatever model provider you
-configure.
+[![CI](https://github.com/Allendior/rayban-meta-glasses-hermes/actions/workflows/ci.yml/badge.svg)](https://github.com/Allendior/rayban-meta-glasses-hermes/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/Allendior/rayban-meta-glasses-hermes?style=social)](https://github.com/Allendior/rayban-meta-glasses-hermes)
 
-This is not an official Meta or Nous Research project, I'm not affiliated
-with either. I built this because I wanted my glasses to talk to my own
-agent, not Meta's.
+Use Ray-Ban Meta glasses as a voice interface for your own [Hermes
+Agent](https://github.com/NousResearch/hermes-agent). The Android companion
+app receives speech from the glasses, sends the transcript through a private
+Tailscale link to a Mac bridge, asks Hermes for an answer, and plays the reply
+back through the phone's active Bluetooth audio route.
 
-This is a companion service that connects a phone client to a Hermes Agent
-running on your own Mac. It keeps the Meta glasses SDK out of the agent
-process and gives mobile clients one stable protocol for:
+This is an independent, experimental project. It is not made by, affiliated
+with, or endorsed by Meta or Nous Research. It does not replace the glasses'
+firmware or bypass Meta's pairing and permission systems.
 
-- persistent Hermes conversations;
-- English, Hindi, and French replies;
-- local speech-to-text and text-to-speech providers;
-- Tailscale-only access when bound to the Mac's Tailscale address.
+> **Current status:** the bridge and Android build are working for typed and
+> spoken development tests. Meta Device Access Toolkit access, physical
+> hands-free input delivery, and audio routing to worn glasses still require a
+> real-device test. The default cloned-voice engine is Chatterbox because it
+> was more intelligible in testing; OmniVoice remains an optional experiment.
 
-The bridge service itself stays on your own machines. It accepts requests only
-on loopback or a Tailscale address. Local STT and TTS stay local when you use
-the included macOS or Chatterbox path. Your Hermes model traffic follows the
-provider you selected in Hermes, and Meta's glasses SDK follows Meta's own data
-handling.
+## What this project does
 
-macOS system voices work out of the box as a fallback. If you want your own
-cloned voice answering back instead of a generic robot voice, the bridge also
-supports MLX-Audio Chatterbox Multilingual v3, running entirely on your Mac,
-in English, Hindi, and French.
+- Connects an Android phone to Meta Wearables Device Access Toolkit (DAT).
+- Provides a glasses speech path plus a typed-question fallback.
+- Keeps a pure interaction state machine for idle, listening, and busy states.
+- Sends final transcripts to a persistent Hermes conversation over Tailscale.
+- Supports English, Hindi, and French reply paths.
+- Offers fast local Android Text-to-Speech or a cloned-voice WAV response.
+- Exposes a small authenticated HTTP API, including an OpenAI-compatible
+  adapter for clients such as Visor.
+- Keeps Hermes on loopback and limits the phone-facing bridge to loopback or a
+  Tailscale IPv4 address.
 
-The Android companion app is in [`android/`](android/README.md). It uses Meta's
-Device Access Toolkit for speech recognition on the glasses, sends final
-transcripts to this bridge over Tailscale, and plays authenticated cloned-voice
-replies through the phone's active Bluetooth audio route.
+## Architecture
 
-An experimental [Visor fast path](docs/VISOR_HERMES_FAST_PATH.md) lets Visor use
-the glasses' wake word, first-turn transcript, and built-in glasses TTS while
-Hermes continues to provide the answer. It avoids cloned-audio synthesis and
-download latency. Ray-Ban Meta Gen 1 compatibility and physical glasses audio
-are still unverified, so read the pairing, privacy-light, and rollback notes
-before trying it.
+```mermaid
+flowchart LR
+    G[Ray-Ban Meta glasses] --> D[Meta DAT / Speech]
+    D --> A[Android companion app]
+    A -->|Bearer auth over Tailscale| B[Mac Hermes bridge]
+    B --> H[Hermes Agent]
+    H --> B
+    B -->|WAV or text reply| A
+    A -->|Active Bluetooth media route| G
+```
 
-## What you need
+Meta remains in the glasses pairing and DAT/Speech path. Hermes remains in
+whatever model-provider path its own configuration uses. The bridge is the
+private adapter between those systems; it is not a local replacement for
+Meta's firmware or Hermes' model provider.
 
-- **Meta Ray-Ban (or similar Meta AI) glasses**, paired to an Android phone
-  with the Meta AI app, Developer Mode enabled on the glasses, and Meta's
-  Speech API accepted for your account. Meta currently marks Speech as
-  experimental and may gate access, so check the Meta AI app or Meta for
-  Developers to see where you stand.
-- **A Meta developer app**: register one at
-  [developers.meta.com](https://developers.meta.com/) to get your own
-  `mwdat_application_id` and `mwdat_client_token` for Device Access Toolkit.
-  Meta ships a documented `0`/test credential pair for local development; you
-  need your own for anything beyond that.
-- **A Mac** (Apple Silicon recommended for Chatterbox voice cloning) already
-  running [Hermes Agent](https://github.com/NousResearch/hermes-agent) with
-  its API server reachable on loopback.
-- **[Tailscale](https://tailscale.com/)** installed and signed into the same
-  tailnet on both the Mac and the Android phone. The bridge deliberately
-  refuses plain HTTP to anything outside a private/tailnet address, see
-  `BridgeEndpoint.kt` and the bridge's own host checks if you want the
-  details.
-- Python 3.11+ and [`uv`](https://github.com/astral-sh/uv) on the Mac; JDK 17
-  and Android SDK 36 to build the Android app.
+## Requirements
 
-You don't need an Apple Developer account or a Meta production app review.
-Meta's Speech API access is the one thing outside this project's control.
-Hermes may still use a cloud model provider if that is how your Hermes install
-is configured.
-
-## Data flow and privacy
-
-- **Glasses and Meta AI app:** Meta's SDK captures the glasses interaction and
-  provides the final transcript. Meta's terms and privacy policy apply here.
-- **Android to Mac:** the companion app sends that transcript to the bridge
-  over your tailnet with a bearer key stored by Android Keystore.
-- **Bridge to Hermes:** the bridge calls the loopback-only Hermes API. Hermes
-  then uses your selected model provider, which may be local or cloud-hosted.
-- **Reply audio:** macOS voices and Chatterbox run locally. Chatterbox downloads
-  its model files from Hugging Face the first time unless you pre-stage them.
-- **Temporary files:** generated audio is mode `0600`, stored in a mode `0700`
-  directory, and removed after its configured TTL. Voice references and keys
-  stay outside Git.
-
-This project does not turn a cloud-configured Hermes setup into a local-only
-system. Check your Hermes model, Meta, and optional model-download choices if
-you need a fully local path.
+- Ray-Ban Meta or compatible Meta AI glasses and an Android phone.
+- The Meta AI app, paired glasses, Developer Mode, and DAT/Speech access for
+  the Meta account.
+- A Mac running [Hermes Agent](https://github.com/NousResearch/hermes-agent),
+  with its API server available on loopback.
+- [Tailscale](https://tailscale.com/) signed in on the Mac and phone.
+- Python 3.11–3.14 and [`uv`](https://docs.astral.sh/uv/) on the Mac.
+- JDK 17 and Android SDK 36 to build the companion app.
+- A Meta developer application for real DAT credentials. Development builds
+  fall back to `0` values when `android/local.properties` is absent; those
+  placeholders can lead to Meta's `DAT_APP_ON_THE_GLASSES_UPDATE_REQUIRED`
+  error and are not production credentials.
 
 ## Quick start
 
-1. Export the same API key that you configured for Hermes as
-   `API_SERVER_KEY` or `HERMES_API_KEY`. Load it from your password manager or
-   secure shell environment. Do not put it in a command you plan to share.
-2. Run `./scripts/configure_target.py` to generate a mode-0600 `.env` with a
-   random bridge key and the active Tailscale IPv4 address. The script uses the
-   already-exported key and does not read Hermes's private `.env` file.
-3. Enable Hermes's API server on loopback port 8642 using that same key.
-4. Start Hermes with `hermes gateway`.
-5. Run the bridge:
+### 1. Prepare the Mac bridge
 
-   ```sh
-   set -a
-   source .env
-   set +a
-   ./scripts/run_bridge.sh
-   ```
+Clone the repository and install the locked Python environment:
 
-6. Check `http://127.0.0.1:8787/health`.
+```sh
+git clone https://github.com/Allendior/rayban-meta-glasses-hermes.git
+cd rayban-meta-glasses-hermes
+uv sync --extra voice --locked
+```
 
-For remote access, set `BRIDGE_HOST` to the Mac's Tailscale IP. Keep Hermes on
-`127.0.0.1`; only the bridge needs to be reachable from the phone. This target
-uses bridge port 8788 because another local service owns 8787.
+Export the same API key used by Hermes. Keep it in a password manager or
+private shell environment; do not commit it or paste it into a public issue.
 
-## Target Mac service
+```sh
+export API_SERVER_KEY='your-hermes-api-key'
+./scripts/configure_target.py \
+  --voice-engine chatterbox \
+  --reference-audio /absolute/path/to/your-voice.wav
+./scripts/run_bridge.sh
+```
 
-The editable checkout lives under `Documents`, which macOS does not expose to
-background launch agents. Install a small runtime copy and persistent service
-under `~/.local/share` with:
+The configuration script generates a mode-0600 `.env`, preserves a bridge key
+across local reconfiguration, and selects the active Tailscale IPv4 address.
+For a system-voice-only test, omit `--reference-audio` and use
+`TTS_PROVIDER=macos` in `.env`.
+
+Check the bridge from the Mac:
+
+```sh
+curl http://127.0.0.1:8788/health
+```
+
+To run it as a user LaunchAgent instead of a foreground process:
 
 ```sh
 ./scripts/install_service.sh --dry-run
@@ -127,129 +108,180 @@ under `~/.local/share` with:
 ./scripts/e2e_target_test.sh
 ```
 
-The preview does not write files or start a service. To stop and remove the
-LaunchAgent later, run `./scripts/remove_service.sh`. It deliberately leaves
-the runtime directory in place so uninstalling cannot silently destroy keys or
-voice recordings.
+The service runtime is copied under `~/.local/share/hermes-glasses-bridge` so
+macOS background-service permissions do not depend on the checkout location.
+Use `./scripts/remove_service.sh` to stop and remove the LaunchAgent; it leaves
+the runtime directory and private voice material in place.
 
-The install script preserves the bridge API key across reinstalls. It also
-copies a prepared `work/voice-reference/owner-reference.wav`, if present, and
-automatically switches the deployed service from the system voice to
-OmniVoice. Pass `VOICE_ENGINE=chatterbox ./scripts/install_service.sh` when the
-older Chatterbox path is needed as a fallback.
+### 2. Build the Android companion app
 
-## Voice-cloning setup
+Put real DAT credentials in the ignored `android/local.properties` file:
 
-Install the pinned MLX runtime and the local audio encoder in the isolated
-project environment:
-
-```sh
-UV_CACHE_DIR="$TMPDIR/hermes-glasses-uv-cache" uv sync --extra voice --locked
+```properties
+mwdat_application_id=your_application_id
+mwdat_client_token=your_client_token
 ```
 
-Record the owner, benchmark all target languages, then reinstall the service:
+Then build and test:
+
+```sh
+cd android
+./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+```
+
+The APK is generated at
+`android/app/build/outputs/apk/debug/app-debug.apk`. Install it with Android
+Studio or `adb install -r`.
+
+### 3. Connect the phone
+
+1. Install Tailscale on the phone and sign in to the same tailnet as the Mac.
+2. Pair the glasses in Meta AI and enable Developer Mode.
+3. Open Hermes Glasses and enter the Mac's Tailscale address, bridge port, and
+   bridge API key. The app stores the key using Android Keystore.
+4. Tap **Test Mac bridge**, then **Connect Meta glasses**.
+5. Test a typed question first; it isolates the network, Hermes, and audio
+   path from DAT hardware behavior.
+6. Select **Fast Android voice** for the lowest latency or **Cloned voice** for
+   the configured Chatterbox voice.
+7. Start glasses listening and test the hands-free interaction with the
+   glasses selected as the phone's Bluetooth media output.
+
+The phone UI also includes a recovery action for Meta's
+`DAT_APP_ON_THE_GLASSES_UPDATE_REQUIRED` error. It opens Meta's official DAT
+glasses-app update flow; it cannot manufacture or bypass Meta credentials.
+
+## Voice engines
+
+### Chatterbox Multilingual v3 — default
+
+The default cloned-voice path uses the pinned MLX Chatterbox Multilingual v3
+model. It is the current choice because it produced the clearest speech in
+real listening tests with this reference voice. It supports the project's
+English, Hindi, and French paths and keeps the model warm in a persistent
+worker.
+
+Record a clean reference and benchmark it locally:
 
 ```sh
 ./scripts/record_voice_reference.sh 45
 HF_HOME="$PWD/work/voice-models" \
   .venv/bin/python scripts/benchmark_voice.py \
   work/voice-reference/owner-reference.wav \
-  --output-dir work/benchmarks/owner-reference
-./scripts/install_service.sh
+  --engine chatterbox \
+  --output-dir work/benchmarks/chatterbox
 ```
 
-If AVFoundation's default audio device is not the microphone, list devices with
-`ffmpeg -f avfoundation -list_devices true -i ""` and pass the desired audio
-specifier as the second argument to `record_voice_reference.sh`.
+Voice recordings, model files, generated WAVs, and benchmark output are
+ignored by Git. Do not commit them.
+
+### OmniVoice — optional experiment
+
+OmniVoice is included for multilingual experimentation and can be selected with
+`--voice-engine omnivoice`. It was faster in warm-worker measurements, but its
+pronunciation was not intelligible enough in this deployment to make it the
+default. Fewer diffusion steps make it faster but can further reduce quality.
+
+```sh
+VOICE_ENGINE=omnivoice ./scripts/install_service.sh
+```
+
+This is a reversible deployment choice. Return to the recommended engine with:
+
+```sh
+VOICE_ENGINE=chatterbox ./scripts/install_service.sh
+```
+
+The [latency notes](docs/CLONED_VOICE_LATENCY.md) record the local measurements
+and why intelligibility wins over the fastest synthesis number here.
 
 ## Phone-facing API
 
-All `/v1/*` requests require `Authorization: Bearer <BRIDGE_API_KEY>`.
+Every `/v1/*` request requires `Authorization: Bearer <BRIDGE_API_KEY>`.
 
-- `POST /v1/transcribe?language=en` accepts raw WAV/audio bytes and returns
-  text. This requires a configured local STT command.
-- `POST /v1/turn` accepts JSON such as
-  `{"text":"What happened today?","language":"en","speak":true}`.
-- `POST /v1/synthesize` accepts JSON such as
-  `{"text":"Bonjour","language":"fr"}`.
-- `GET /v1/audio/<id>` returns generated audio.
-- `GET /v1/models` lists the Hermes aliases available to OpenAI-compatible clients.
-- `POST /v1/chat/completions` accepts the non-streaming OpenAI chat-completions
-  shape used by Visor. Use `hermes-en`, `hermes-hi`, or `hermes-fr` as the model.
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Unauthenticated bridge/Hermes health check |
+| `GET /v1/models` | Authenticated Hermes model aliases |
+| `POST /v1/turn` | Hermes turn with optional cloned audio |
+| `POST /v1/synthesize` | Synthesize a reply directly |
+| `POST /v1/transcribe` | Run a configured local STT command |
+| `GET /v1/audio/<id>` | Download a generated authenticated WAV |
+| `POST /v1/chat/completions` | Non-streaming OpenAI-compatible adapter |
 
-`session_id` returned by `/v1/turn` should be sent back on later turns.
+Example:
 
-## Local voice command contract
-
-Set `TTS_PROVIDER=command` and define `TTS_COMMAND` as an argument template.
-The bridge executes it without a shell. Supported placeholders are:
-
-- `{text_file}`: UTF-8 input text file;
-- `{output_file}`: requested output WAV file;
-- `{language}`: `en`, `hi`, or `fr`;
-- `{reference_audio}`: your voice reference recording.
-
-The process must exit successfully and create `{output_file}`. Example:
-
-```dotenv
-TTS_PROVIDER=command
-TTS_REFERENCE_AUDIO=/absolute/path/to/my-voice.wav
-TTS_COMMAND=/absolute/path/to/python /absolute/path/to/chatterbox_tts.py --text-file {text_file} --output {output_file} --language {language} --reference {reference_audio}
+```sh
+curl -H "Authorization: Bearer $BRIDGE_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"What is the capital of France?", "language":"en", "speak":true}' \
+  http://100.x.y.z:8788/v1/turn
 ```
 
-For MLX-based cloned voices, `TTS_WORKER_COMMAND` can keep the model loaded
-between replies. It receives JSON lines containing `text`, `language`, and
-`output_file`, and must print `{"ready": true}` once at startup followed by
-`{"ok": true}` after each generated file. The bundled Chatterbox worker is
-configured automatically by `scripts/configure_target.py` when a reference is
-provided. The first reply after a bridge restart still pays model-load time;
-later replies avoid that repeated startup cost. With the default configuration,
-the bundled OmniVoice worker is selected; Chatterbox remains available through
-the fallback command shown above.
+`/v1/turn` returns a `session_id`; send it on later turns to continue the
+conversation. Supported language codes are `en`, `hi`, and `fr`.
 
-The target install generates this command automatically when the owner reference
-exists; keys and voice recordings remain outside version control. OmniVoice uses
-the same reference clip for English, Hindi, and French. For best cross-language
-cloning, set the private `OMNIVOICE_REFERENCE_TEXT` value in the generated
-`.env` to the exact words spoken in the clean reference clip. If it is empty,
-the bridge still clones from the preprocessed audio, but the model documentation
-warns that alignment can be less stable.
+## Security and privacy
 
-OmniVoice is a local MLX model with a 0.6B Qwen backbone and a 24 kHz HiggsAudio
-decoder. The default worker uses 16 diffusion steps to reduce latency and keeps
-the encoded reference prompt in memory between replies. The MLX model is
-downloaded from Hugging Face on first use; its pinned revision and license are
-listed in `THIRD_PARTY_NOTICES.md`.
+- The bridge rejects public plain-HTTP bind addresses; use loopback or a
+  Tailscale IPv4 address.
+- Hermes is expected to stay on `127.0.0.1`; only the bridge is phone-facing.
+- The Android API key is stored with Android Keystore and is not embedded in
+  the APK.
+- The bridge uses a separate bearer key for phone requests.
+- Generated audio is private temporary data and expires after its configured
+  TTL. Voice references and model files stay outside version control.
+- Local Chatterbox and macOS voices stay on the Mac. Hermes may still use a
+  cloud model provider if that is how Hermes is configured.
+- Meta's SDK, glasses, and Meta AI app remain subject to Meta's own terms and
+  privacy handling.
 
-The STT command uses the same pattern with `{input_file}`, `{output_file}`, and
-`{language}`; it must write the transcript as UTF-8 text.
+This project is not automatically an offline or local-only assistant. Inspect
+your Hermes model provider, Meta permissions, and model-download settings if
+that distinction matters for your deployment.
 
-## Validation
+## Development
 
-Run the dependency-free test suite with:
+Run the dependency-free bridge tests and source checks:
 
 ```sh
 python3 -m unittest discover -s tests -v
+python3 -m compileall -q hermes_voice_bridge scripts tests
 ```
 
-## Troubleshooting
+Run Android verification from `android/`:
 
-- **App shows "Bridge URL needs a host" or is blank on first launch**: that's
-  expected, there is no default bridge URL baked into the app. Enter your
-  Mac's Tailscale IPv4 address (`tailscale ip -4` on the Mac) and the port
-  from its `.env` (`BRIDGE_PORT`).
-- **"Plain HTTP is allowed only for a Tailscale or local address"**: the app
-  refuses `http://` to anything outside `100.64.0.0/10`, `127.0.0.1`,
-  `localhost`, or the Android emulator's `10.0.2.2`. Use your Tailscale IP, or
-  put a TLS terminating proxy in front of the bridge for anything else.
-- **Bridge starts but the phone can't reach it**: confirm both devices are on
-  the same tailnet (`tailscale status` on the Mac should list the phone), and
-  that `BRIDGE_HOST` in `.env` is the Mac's Tailscale IP, not `127.0.0.1`.
-- **Meta glasses won't register / "Speech not available"**: your Meta account
-  needs Speech API access, which Meta gates and may not grant immediately.
-  Typed questions in the app work independently of glasses registration, so
-  use those to verify the rest of the pipeline first.
-- **Voice cloning sounds off / falls back to a system voice**: check
-  `TTS_PROVIDER` in `.env` and that `work/voice-reference/owner-reference.wav`
-  exists; `scripts/benchmark_voice.py` helps compare a reference clip across
-  languages before committing to it.
+```sh
+./gradlew --no-daemon testDebugUnitTest
+./gradlew --no-daemon lintDebug
+./gradlew --no-daemon assembleDebug
+```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md), and the
+focused notes in [`docs/`](docs/). Keep `.env`, `android/local.properties`,
+`work/`, model files, voice recordings, and build output out of commits.
+
+## Project layout
+
+```text
+android/              Android companion app and unit tests
+hermes_voice_bridge/  Authenticated Mac-side HTTP bridge
+scripts/              Setup, service, voice, and end-to-end helpers
+tests/                Python bridge tests
+docs/                 Architecture, latency, and experimental notes
+deploy/               LaunchAgent template for macOS
+```
+
+## Roadmap
+
+- Validate hands-free input delivery and Bluetooth audio with glasses worn.
+- Measure end-to-end latency across repeated English, Hindi, and French turns.
+- Improve streaming or chunked reply playback without sacrificing intelligibility.
+- Expand language and local STT coverage.
+- Document additional DAT firmware/device compatibility as it is observed.
+
+## License
+
+The original source code is released under the [MIT License](LICENSE). See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for Meta SDK, MLX, model, and
+other dependency terms.
