@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 import json
 import os
 from pathlib import Path
@@ -79,18 +80,23 @@ def main() -> int:
         if not text:
             raise SystemExit("text file is empty")
 
-    # Import only after argument validation so configuration failures remain fast.
-    from huggingface_hub import snapshot_download
-    from mlx_audio.tts.utils import load_model
+    # The worker uses stdout as a JSON-lines protocol. Some MLX dependencies
+    # print progress or diagnostics to stdout, so keep those messages away from
+    # the protocol stream.
+    protocol_stdout = sys.stdout
+    with redirect_stdout(sys.stderr):
+        # Import only after argument validation so configuration failures remain fast.
+        from huggingface_hub import snapshot_download
+        from mlx_audio.tts.utils import load_model
 
-    model_path = snapshot_download(
-        repo_id=args.model,
-        revision=args.model_revision,
-    )
-    model = load_model(model_path)
+        model_path = snapshot_download(
+            repo_id=args.model,
+            revision=args.model_revision,
+        )
+        model = load_model(model_path)
 
     if args.worker:
-        print(json.dumps({"ready": True}), flush=True)
+        print(json.dumps({"ready": True}), file=protocol_stdout, flush=True)
         for raw in sys.stdin:
             try:
                 request = json.loads(raw)
@@ -102,10 +108,11 @@ def main() -> int:
                 output_path = Path(output_raw).expanduser().resolve()
                 if not text or language not in SUPPORTED_LANGUAGES or not output_raw:
                     raise ValueError("invalid TTS worker request")
-                synthesize(model, text, output_path, language, reference_path)
-                print(json.dumps({"ok": True}), flush=True)
+                with redirect_stdout(sys.stderr):
+                    synthesize(model, text, output_path, language, reference_path)
+                print(json.dumps({"ok": True}), file=protocol_stdout, flush=True)
             except Exception:
-                print(json.dumps({"ok": False}), flush=True)
+                print(json.dumps({"ok": False}), file=protocol_stdout, flush=True)
         return 0
 
     synthesize(model, text, output_path, args.language, reference_path)
